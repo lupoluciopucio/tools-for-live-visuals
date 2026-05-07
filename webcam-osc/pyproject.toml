@@ -1,0 +1,16 @@
+[project]
+name = "webcam-osc"
+version = "0.1.0"
+description = "Webcam analysis → OSC → TouchDesigner"
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-python>=4.9.0",
+    "mediapipe>=0.10.14",
+    "python-osc>=1.8.3",
+    "pyyaml>=6.0.2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[tool.uv]
+package = false

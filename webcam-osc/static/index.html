@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>webcam-osc</title>
+<style>
+  :root {
+    --bg: #111;
+    --surface: #1e1e1e;
+    --surface2: #2a2a2a;
+    --border: #333;
+    --accent: #00e5ff;
+    --accent2: #ff5252;
+    --text: #eee;
+    --text2: #888;
+    --on: #00e676;
+    --off: #444;
+    --radius: 10px;
+    --gap: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    padding: var(--gap);
+    overflow: hidden;
+  }
+  h1 { font-size: 18px; font-weight: 600; color: var(--accent); margin-bottom: var(--gap); letter-spacing: 0.04em; }
+  h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text2); margin-bottom: 10px; }
+  section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--gap);
+    margin-bottom: var(--gap);
+  }
+
+  /* ---- video feed ---- */
+  .video-wrap {
+    position: relative;
+    width: 100%;
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: var(--gap);
+  }
+  .col-left .video-wrap {
+    /* fill the column; image keeps its own ratio via contain */
+    flex: 1;
+    margin-bottom: 0;
+    min-height: 0;
+  }
+  .video-wrap img {
+    width: 100%; height: 100%;
+    object-fit: contain; display: block;
+  }
+  .video-overlay {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(0,0,0,.55);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 11px; color: var(--text2);
+    cursor: pointer; user-select: none;
+  }
+  .video-overlay:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ---- rows ---- */
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  .row label { flex: 1; color: var(--text2); }
+  .row input[type=text], .row input[type=number], .row select {
+    flex: 1.5;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 14px;
+    outline: none;
+  }
+  .row input:focus, .row select:focus { border-color: var(--accent); }
+
+  /* ---- toggle ---- */
+  .toggle-wrap { display: flex; align-items: center; gap: 10px; }
+  .toggle {
+    position: relative; width: 44px; height: 24px; flex-shrink: 0;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: var(--off); border-radius: 24px; transition: background .2s;
+  }
+  .slider:before {
+    content: ""; position: absolute;
+    width: 18px; height: 18px; left: 3px; top: 3px;
+    background: #fff; border-radius: 50%; transition: transform .2s;
+  }
+  .toggle input:checked + .slider { background: var(--on); }
+  .toggle input:checked + .slider:before { transform: translateX(20px); }
+
+  /* ---- tracker card ---- */
+  .tracker-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  }
+  .tracker-header span { font-weight: 600; font-size: 15px; flex: 1; }
+  .tracker-body { padding-left: 4px; }
+  .tracker-body .row label { font-size: 12px; }
+
+  /* ---- slider ---- */
+  input[type=range] {
+    flex: 1.5; accent-color: var(--accent);
+    height: 4px; cursor: pointer;
+  }
+  .val { min-width: 36px; text-align: right; color: var(--text2); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  /* ---- osc monitor ---- */
+  #osc-log {
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    height: 220px;
+    overflow-y: auto;
+    padding: 8px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .osc-entry { display: flex; gap: 8px; }
+  .osc-addr { color: var(--accent); flex-shrink: 0; }
+  .osc-val { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #osc-controls { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  #osc-status { flex: 1; font-size: 11px; color: var(--text2); }
+  button {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.danger:hover { border-color: var(--accent2); color: var(--accent2); }
+
+  /* ---- gesture bars ---- */
+  .gesture-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .gesture-item { display: flex; flex-direction: column; gap: 3px; }
+  .gesture-label {
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: var(--text2);
+  }
+  .gesture-label .on-badge {
+    font-size: 10px; font-weight: 700;
+    color: var(--on); opacity: 0; transition: opacity .1s;
+  }
+  .gesture-label .on-badge.active { opacity: 1; }
+  .gesture-bar-bg {
+    height: 6px; border-radius: 3px;
+    background: var(--surface2); overflow: hidden;
+  }
+  .gesture-bar-fill {
+    height: 100%; width: 0%; border-radius: 3px;
+    background: var(--accent); transition: width .05s linear;
+  }
+  .gesture-bar-fill.on { background: var(--on); }
+
+  /* ---- save bar ---- */
+  #save-bar {
+    display: none;
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex; gap: 10px; align-items: center;
+    justify-content: flex-end;
+  }
+  #save-status { flex: 1; font-size: 12px; color: var(--text2); }
+  #save-btn {
+    background: var(--accent);
+    border: none; border-radius: 6px;
+    color: #000; font-weight: 600; padding: 8px 20px;
+    font-size: 14px; cursor: pointer;
+  }
+  .layout {
+    display: flex;
+    gap: var(--gap);
+    height: calc(100vh - 2 * var(--gap));
+  }
+  .col-left {
+    width: 42%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    overflow: hidden;
+  }
+  .col-left h1 { flex-shrink: 0; }
+  .col-left .video-wrap { flex: 1; margin-bottom: 0; }
+  .col-right {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 4px;
+    padding-bottom: 60px;
+  }
+  @media (max-width: 700px) {
+    body { overflow: auto; }
+    .layout { flex-direction: column; height: auto; }
+    .col-left { width: 100%; overflow: visible; }
+    .col-right { overflow-y: visible; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<div class="col-left">
+<h1>webcam-osc</h1>
+<div class="video-wrap" id="video-wrap">
+  <img id="video-feed" src="/video" alt="webcam feed">
+  <span class="video-overlay" id="video-toggle">hide</span>
+</div>
+</div>
+<div class="col-right">
+
+<!-- OSC / Network -->
+<section>
+  <h2>OSC Output</h2>
+  <div class="row">
+    <label>Host</label>
+    <input type="text" id="osc-host" placeholder="127.0.0.1">
+  </div>
+  <div class="row">
+    <label>Port</label>
+    <input type="number" id="osc-port" placeholder="9000" min="1" max="65535">
+  </div>
+</section>
+
+<!-- Camera -->
+<section>
+  <h2>Camera</h2>
+  <div class="row">
+    <label>Source</label>
+    <select id="cam-select"><option value="0">Loading…</option></select>
+  </div>
+  <div class="row">
+    <label>Resolution</label>
+    <select id="cam-res">
+      <option value="640x480">640 × 480</option>
+      <option value="1280x720">1280 × 720</option>
+      <option value="1920x1080">1920 × 1080</option>
+    </select>
+  </div>
+  <div class="row">
+    <label>Rotation</label>
+    <select id="cam-rotation">
+      <option value="0">0°</option>
+      <option value="90">90° clockwise</option>
+      <option value="180">180°</option>
+      <option value="270">270° clockwise</option>
+    </select>
+  </div>
+</section>
+
+<!-- Fingers live readout -->
+<section id="finger-section" style="display:none">
+  <h2>Fingers <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text2);font-size:11px;margin-left:6px;">open = 1 (extended), 0 (curled)</span></h2>
+  <div class="gesture-grid" id="finger-grid"></div>
+</section>
+
+<!-- Gestures live readout -->
+<section id="gesture-section" style="display:none">
+  <h2>Gestures <span id="gesture-hand-label" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text2);font-size:11px;margin-left:6px;">hand 0</span></h2>
+  <div class="gesture-grid" id="gesture-grid"></div>
+</section>
+
+<!-- Trackers -->
+<section id="trackers-section">
+  <h2>Trackers</h2>
+  <div id="tracker-cards"></div>
+</section>
+
+<!-- OSC Monitor -->
+<section>
+  <h2>OSC Monitor</h2>
+  <div id="osc-log"></div>
+  <div id="osc-controls">
+    <span id="osc-status">Connecting…</span>
+    <button id="pause-btn">Pause</button>
+    <button id="clear-btn">Clear</button>
+  </div>
+</section>
+
+</div><!-- col-right -->
+</div><!-- layout -->
+
+<!-- Save bar -->
+<div id="save-bar">
+  <span id="save-status"></span>
+  <button id="save-btn">Apply</button>
+</div>
+
+<script>
+// ─── state ──────────────────────────────────────────────────────────────────
+let cfg = {};
+let dirty = false;
+let oscPaused = false;
+
+const TRACKER_DEFS = [
+  {
+    key: "hands",
+    label: "Hands",
+    controls: [
+      { key: "max_num_hands", label: "Max hands", type: "range", min: 1, max: 4, step: 1 },
+      { key: "min_detection_confidence", label: "Detection confidence", type: "range", min: 0.1, max: 1.0, step: 0.05 },
+      { key: "min_tracking_confidence",  label: "Tracking confidence",  type: "range", min: 0.1, max: 1.0, step: 0.05 },
+      { key: "gesture_threshold", label: "Gesture threshold (/on)", type: "range", min: 0.1, max: 1.0, step: 0.05 },
+    ]
+  },
+  {
+    key: "face",
+    label: "Face",
+    controls: [
+      { key: "min_detection_confidence", label: "Detection confidence", type: "range", min: 0.1, max: 1.0, step: 0.05 },
+      { key: "min_tracking_confidence",  label: "Tracking confidence",  type: "range", min: 0.1, max: 1.0, step: 0.05 },
+      { key: "send_raw_landmarks", label: "Send raw landmarks", type: "toggle" },
+    ]
+  },
+  {
+    key: "pose",
+    label: "Pose",
+    controls: [
+      { key: "model_complexity", label: "Model complexity", type: "range", min: 0, max: 2, step: 1 },
+      { key: "min_detection_confidence", label: "Detection confidence", type: "range", min: 0.1, max: 1.0, step: 0.05 },
+      { key: "min_tracking_confidence",  label: "Tracking confidence",  type: "range", min: 0.1, max: 1.0, step: 0.05 },
+    ]
+  },
+  {
+    key: "optical_flow",
+    label: "Optical Flow",
+    controls: [
+      { key: "grid_enabled", label: "Grid mode", type: "toggle" },
+      { key: "grid_size",    label: "Grid size",  type: "range", min: 2, max: 16, step: 1 },
+    ]
+  },
+];
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+function markDirty() {
+  dirty = true;
+  document.getElementById("save-bar").style.display = "flex";
+  document.getElementById("save-status").textContent = "Unsaved changes";
+}
+
+function setNested(obj, path, val) {
+  const parts = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!cur[parts[i]]) cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = val;
+}
+
+function getNested(obj, path) {
+  return path.split(".").reduce((o, k) => (o ? o[k] : undefined), obj);
+}
+
+// ─── load config ─────────────────────────────────────────────────────────────
+async function loadConfig() {
+  const res = await fetch("/api/config");
+  cfg = await res.json();
+  renderAll();
+}
+
+// ─── cameras ─────────────────────────────────────────────────────────────────
+async function loadCameras() {
+  const res = await fetch("/api/cameras");
+  const cams = await res.json();
+  const sel = document.getElementById("cam-select");
+  sel.innerHTML = cams.map(c => `<option value="${c.index}">${c.name}</option>`).join("");
+  const preferred = cams.find(c => c.preferred);
+  const idx = preferred ? preferred.index : (cfg.camera?.index ?? 0);
+  sel.value = String(idx);
+  if (cfg.camera) cfg.camera.index = idx;
+  sel.addEventListener("change", () => {
+    setNested(cfg, "camera.index", parseInt(sel.value));
+    markDirty();
+  });
+}
+
+// ─── render ──────────────────────────────────────────────────────────────────
+function renderAll() {
+  // OSC
+  document.getElementById("osc-host").value = cfg.osc?.host ?? "127.0.0.1";
+  document.getElementById("osc-port").value = cfg.osc?.port ?? 9000;
+
+  // Camera resolution + rotation
+  const w = cfg.camera?.width ?? 640;
+  const h = cfg.camera?.height ?? 480;
+  document.getElementById("cam-res").value = `${w}x${h}`;
+  document.getElementById("cam-rotation").value = String(cfg.camera?.rotation ?? 0);
+
+  // Trackers
+  const container = document.getElementById("tracker-cards");
+  container.innerHTML = "";
+  TRACKER_DEFS.forEach(def => renderTrackerCard(container, def));
+
+  syncGesturePanel(); syncFingerPanel();
+  loadCameras();
+  bindOscInputs();
+  bindResInput();
+}
+
+function renderTrackerCard(container, def) {
+  const t = cfg.trackers?.[def.key] ?? {};
+  const enabled = t.enabled ?? false;
+
+  const card = document.createElement("div");
+  card.style.cssText = "margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:12px;";
+
+  // Header row
+  const header = document.createElement("div");
+  header.className = "tracker-header";
+  header.innerHTML = `
+    <span>${def.label}</span>
+    <label class="toggle">
+      <input type="checkbox" ${enabled ? "checked" : ""}>
+      <span class="slider"></span>
+    </label>`;
+  card.appendChild(header);
+
+  const toggle = header.querySelector("input[type=checkbox]");
+  toggle.addEventListener("change", () => {
+    setNested(cfg, `trackers.${def.key}.enabled`, toggle.checked);
+    if (def.key === "hands") { syncGesturePanel(); syncFingerPanel(); }
+    markDirty();
+  });
+
+  // Controls
+  const body = document.createElement("div");
+  body.className = "tracker-body";
+  def.controls.forEach(ctrl => {
+    const val = getNested(cfg, `trackers.${def.key}.${ctrl.key}`);
+    if (ctrl.type === "range") {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `
+        <label>${ctrl.label}</label>
+        <input type="range" min="${ctrl.min}" max="${ctrl.max}" step="${ctrl.step}" value="${val ?? ctrl.min}">
+        <span class="val">${val ?? ctrl.min}</span>`;
+      const input = row.querySelector("input");
+      const span  = row.querySelector(".val");
+      input.addEventListener("input", () => {
+        const v = ctrl.step === 1 ? parseInt(input.value) : parseFloat(input.value);
+        span.textContent = v;
+        setNested(cfg, `trackers.${def.key}.${ctrl.key}`, v);
+        markDirty();
+      });
+      body.appendChild(row);
+    } else if (ctrl.type === "toggle") {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `
+        <label>${ctrl.label}</label>
+        <label class="toggle">
+          <input type="checkbox" ${val ? "checked" : ""}>
+          <span class="slider"></span>
+        </label>`;
+      const input = row.querySelector("input");
+      input.addEventListener("change", () => {
+        setNested(cfg, `trackers.${def.key}.${ctrl.key}`, input.checked);
+        markDirty();
+      });
+      body.appendChild(row);
+    }
+  });
+  card.appendChild(body);
+  container.appendChild(card);
+}
+
+function bindOscInputs() {
+  ["osc-host", "osc-port"].forEach(id => {
+    document.getElementById(id).addEventListener("input", () => {
+      const host = document.getElementById("osc-host").value;
+      const port = parseInt(document.getElementById("osc-port").value) || 9000;
+      setNested(cfg, "osc.host", host);
+      setNested(cfg, "osc.port", port);
+      markDirty();
+    });
+  });
+}
+
+function bindResInput() {
+  document.getElementById("cam-res").addEventListener("change", (e) => {
+    const [w, h] = e.target.value.split("x").map(Number);
+    setNested(cfg, "camera.width", w);
+    setNested(cfg, "camera.height", h);
+    markDirty();
+  });
+  document.getElementById("cam-rotation").addEventListener("change", (e) => {
+    setNested(cfg, "camera.rotation", parseInt(e.target.value));
+    markDirty();
+  });
+}
+
+// ─── apply ───────────────────────────────────────────────────────────────────
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const status = document.getElementById("save-status");
+  status.textContent = "Applying…";
+  try {
+    await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    dirty = false;
+    status.textContent = "Applied ✓";
+    setTimeout(() => {
+      document.getElementById("save-bar").style.display = "none";
+    }, 1500);
+  } catch (e) {
+    status.textContent = "Error — is the server running?";
+  }
+});
+
+// ─── finger panel ────────────────────────────────────────────────────────────
+const FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"];
+const _fingerEls  = {}; // key: "{hand}/{finger}" -> {fill, badge}
+
+function buildFingerGrid() {
+  const grid = document.getElementById("finger-grid");
+  grid.innerHTML = "";
+  const maxHands = cfg.trackers?.hands?.max_num_hands ?? 2;
+  for (let h = 0; h < maxHands; h++) {
+    if (maxHands > 1) {
+      const sep = document.createElement("div");
+      sep.style.cssText = "grid-column:1/-1;font-size:11px;color:var(--text2);margin-top:4px;";
+      sep.textContent = `hand ${h}`;
+      grid.appendChild(sep);
+    }
+    for (const f of FINGER_NAMES) {
+      const key = `${h}/${f}`;
+      const item = document.createElement("div");
+      item.className = "gesture-item";
+      item.innerHTML = `
+        <div class="gesture-label">
+          <span>${f}</span>
+          <span class="on-badge" id="fbadge-${h}-${f}">ON</span>
+        </div>
+        <div class="gesture-bar-bg">
+          <div class="gesture-bar-fill" id="fbar-${h}-${f}"></div>
+        </div>`;
+      grid.appendChild(item);
+      _fingerEls[key] = {
+        fill:  item.querySelector(".gesture-bar-fill"),
+        badge: item.querySelector(".on-badge"),
+      };
+    }
+  }
+}
+
+function syncFingerPanel() {
+  const enabled = cfg.trackers?.hands?.enabled ?? false;
+  document.getElementById("finger-section").style.display = enabled ? "" : "none";
+  if (enabled) buildFingerGrid();
+}
+
+// ─── gesture panel ───────────────────────────────────────────────────────────
+const GESTURE_NAMES = ["fist", "open", "point", "peace", "pinch"];
+const _gestureEls = {}; // key: "{hand}/{gesture}" -> {fill, badge, valSpan}
+
+function buildGestureGrid() {
+  const grid = document.getElementById("gesture-grid");
+  grid.innerHTML = "";
+  const maxHands = cfg.trackers?.hands?.max_num_hands ?? 2;
+  for (let h = 0; h < maxHands; h++) {
+    if (maxHands > 1) {
+      const sep = document.createElement("div");
+      sep.style.cssText = "grid-column:1/-1;font-size:11px;color:var(--text2);margin-top:4px;";
+      sep.textContent = `hand ${h}`;
+      grid.appendChild(sep);
+    }
+    for (const g of GESTURE_NAMES) {
+      const key = `${h}/${g}`;
+      const item = document.createElement("div");
+      item.className = "gesture-item";
+      item.innerHTML = `
+        <div class="gesture-label">
+          <span>${g}</span>
+          <span class="on-badge" id="badge-${h}-${g}">ON</span>
+        </div>
+        <div class="gesture-bar-bg">
+          <div class="gesture-bar-fill" id="bar-${h}-${g}"></div>
+        </div>`;
+      grid.appendChild(item);
+      _gestureEls[key] = {
+        fill:  item.querySelector(".gesture-bar-fill"),
+        badge: item.querySelector(".on-badge"),
+      };
+    }
+  }
+}
+
+function updateGestureBar(hand, gesture, value, isOn) {
+  const el = _gestureEls[`${hand}/${gesture}`];
+  if (!el) return;
+  el.fill.style.width = (value * 100).toFixed(1) + "%";
+  el.fill.classList.toggle("on", isOn);
+  el.badge.classList.toggle("active", isOn);
+}
+
+function syncGesturePanel() {
+  const enabled = cfg.trackers?.hands?.enabled ?? false;
+  document.getElementById("gesture-section").style.display = enabled ? "" : "none";
+  if (enabled) buildGestureGrid();
+}
+
+// ─── osc monitor ─────────────────────────────────────────────────────────────
+function connectOscWs() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/osc`);
+  const log = document.getElementById("osc-log");
+  const status = document.getElementById("osc-status");
+
+  ws.onopen  = () => { status.textContent = "Live"; };
+  ws.onclose = () => {
+    status.textContent = "Disconnected — retrying…";
+    setTimeout(connectOscWs, 2000);
+  };
+  ws.onmessage = (e) => {
+    const entries = JSON.parse(e.data);
+    entries.forEach(([addr, val]) => {
+      // finger bar updates — /webcam/hand/{n}/finger/{name}/open(/on)?
+      const fm = addr.match(/^\/webcam\/hand\/(\d+)\/finger\/(\w+)\/open(\/on)?$/);
+      if (fm) {
+        const [, h, f, isOnSuffix] = fm;
+        const el = _fingerEls[`${h}/${f}`];
+        if (el) {
+          if (!isOnSuffix) {
+            el.fill.style.width = (parseFloat(val) * 100).toFixed(1) + "%";
+          } else {
+            const on = parseFloat(val) >= 0.5;
+            el.fill.classList.toggle("on", on);
+            el.badge.classList.toggle("active", on);
+          }
+        }
+      }
+      // gesture bar updates — /webcam/hand/{n}/gesture/{name}(/on)?
+      const gm = addr.match(/^\/webcam\/hand\/(\d+)\/gesture\/(\w+)(\/on)?$/);
+      if (gm) {
+        const [, h, g, isOnSuffix] = gm;
+        const el = _gestureEls[`${h}/${g}`];
+        if (el) {
+          if (!isOnSuffix) {
+            el.fill.style.width = (parseFloat(val) * 100).toFixed(1) + "%";
+          } else {
+            const on = parseFloat(val) >= 0.5;
+            el.fill.classList.toggle("on", on);
+            el.badge.classList.toggle("active", on);
+          }
+        }
+      }
+      if (oscPaused) return;
+      const div = document.createElement("div");
+      div.className = "osc-entry";
+      div.innerHTML = `<span class="osc-addr">${addr}</span><span class="osc-val">${val}</span>`;
+      log.appendChild(div);
+    });
+    // Keep max 200 lines in DOM
+    while (log.children.length > 200) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+  };
+}
+
+document.getElementById("pause-btn").addEventListener("click", () => {
+  oscPaused = !oscPaused;
+  document.getElementById("pause-btn").textContent = oscPaused ? "Resume" : "Pause";
+});
+document.getElementById("clear-btn").addEventListener("click", () => {
+  document.getElementById("osc-log").innerHTML = "";
+});
+
+// ─── video toggle ─────────────────────────────────────────────────────────
+document.getElementById("video-toggle").addEventListener("click", () => {
+  const img  = document.getElementById("video-feed");
+  const wrap = document.getElementById("video-wrap");
+  const btn  = document.getElementById("video-toggle");
+  if (img.src.endsWith("/video")) {
+    img.src = "";
+    wrap.style.display = "none";
+    btn.textContent = "show";
+  } else {
+    img.src = "/video";
+    wrap.style.display = "";
+    btn.textContent = "hide";
+  }
+});
+
+// ─── init ─────────────────────────────────────────────────────────────────────
+loadConfig();
+connectOscWs();
+
+window.addEventListener('beforeunload', () => {
+  navigator.sendBeacon('/api/shutdown');
+});
+</script>
+</body>
+</html>

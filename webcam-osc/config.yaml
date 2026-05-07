@@ -1,0 +1,53 @@
+osc:
+  host: "127.0.0.1"
+  port: 9000
+
+ui:
+  port: 8080   # open http://localhost:8080 (or your Mac's LAN IP from any device)
+
+camera:
+  index: 0          # webcam device index (0 = built-in, 1 = external)
+  width: 640
+  height: 480
+  fps: 30
+  rotation: 0       # 0, 90, 180, 270 — rotate frame (iPhone Continuity Camera sends landscape regardless of orientation)
+
+preview:
+  enabled: false   # feed is shown in the web UI; set true to also open a local OpenCV window
+  window_name: "webcam-osc"
+
+trackers:
+  hands:
+    enabled: true
+    max_num_hands: 2
+    min_detection_confidence: 0.7
+    min_tracking_confidence: 0.5
+    gesture_threshold: 0.55   # 0–1: value above which a /gesture/*/on channel fires
+
+  face:
+    enabled: false
+    max_num_faces: 1
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+    # send all 468 landmarks (chunked) or only derived values
+    send_raw_landmarks: true
+    landmark_chunk_size: 200   # floats per OSC message
+
+  pose:
+    enabled: false
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+    model_complexity: 1        # 0=lite, 1=full, 2=heavy
+
+  optical_flow:
+    enabled: false
+    # Farneback parameters
+    pyr_scale: 0.5
+    levels: 3
+    winsize: 15
+    iterations: 3
+    poly_n: 5
+    poly_sigma: 1.2
+    # grid overlay: split frame into NxN cells and send per-cell magnitude
+    grid_enabled: false
+    grid_size: 8

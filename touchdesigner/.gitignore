@@ -1,0 +1,4 @@
+# .tox files are binary — commit them if you want to share the component,
+# or leave them gitignored and regenerate with build_webcam_osc.py
+# Uncomment the next line to ignore .tox:
+# *.tox
