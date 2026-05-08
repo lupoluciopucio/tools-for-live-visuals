@@ -23,6 +23,10 @@ trackers:
     min_detection_confidence: 0.7
     min_tracking_confidence: 0.5
     gesture_threshold: 0.55   # 0–1: value above which a /gesture/*/on channel fires
+    send_landmarks: false     # /hand/{i}/landmarks  (63 floats — heavy)
+    send_tips: false          # /hand/{i}/tip/{name}/x|y  (10 channels)
+    send_fingers: true        # /hand/{i}/finger/{name}/curl|open|open/on  (15 channels)
+    send_gestures: true       # /hand/{i}/gesture/{name}|/on  (10 channels)
 
   face:
     enabled: false

@@ -63,6 +63,10 @@ def build_trackers(cfg: dict) -> list[BaseTracker]:
             min_detection_confidence=h.get("min_detection_confidence", 0.7),
             min_tracking_confidence=h.get("min_tracking_confidence", 0.5),
             gesture_threshold=h.get("gesture_threshold", 0.65),
+            send_landmarks=h.get("send_landmarks", False),
+            send_tips=h.get("send_tips", False),
+            send_fingers=h.get("send_fingers", True),
+            send_gestures=h.get("send_gestures", True),
         ))
         print("  [+] HandsTracker")
 
@@ -207,6 +211,10 @@ def main():
             for tracker in trackers:
                 pairs = tracker.process(frame, prev_frame)
                 all_pairs.extend(pairs)
+
+            # Mirror AFTER tracker processing: MediaPipe saw the real frame
+            # (correct left/right handedness), preview shows natural mirror view.
+            frame = cv2.flip(frame, 1)
 
             osc.send_pairs(all_pairs)
 

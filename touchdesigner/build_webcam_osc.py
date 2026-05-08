@@ -124,6 +124,29 @@ def build_webcam_osc():
         null.nodeY   = y
         null.comment = 'CHOP output connector'
 
+    # ── Hands sub-selects by signal type ──────────────────────────────────────
+    # Each reads directly from oscin so it works regardless of which send_*
+    # flags are enabled in config.yaml. In TD you pick the output you need.
+    hand_subtypes = [
+        ('gestures',  '*hand*/gesture*',   -340),
+        ('fingers',   '*hand*/finger*',    -410),
+        ('tips',      '*hand*/tip*',       -480),
+        ('landmarks', '*hand*/landmark*',  -550),
+    ]
+    for suffix, pattern, y in hand_subtypes:
+        sel = b.create(selectCHOP, 'select_hands_' + suffix)
+        sel.par.chop      = oscin.path
+        sel.par.channames = pattern
+        sel.nodeX         = -150
+        sel.nodeY         = y
+        sel.comment       = pattern
+
+        null = b.create(outCHOP, 'out_hands_' + suffix)
+        null.setInputs([sel])
+        null.nodeX   = 100
+        null.nodeY   = y
+        null.comment = 'CHOP output connector'
+
     # out_all: raw, everything (useful for discovering new channels)
     null_all = b.create(outCHOP, 'out_all')
     null_all.setInputs([oscin])
@@ -141,18 +164,28 @@ def build_webcam_osc():
         "  uv run python main.py",
         "",
         "Outputs (TOP):",
-        "  out_video  annotated webcam image",
+        "  out_video           annotated webcam image",
         "",
-        "Outputs (CHOP):",
-        "  out_hands  /webcam/hand/**",
-        "  out_face   /webcam/face/**",
-        "  out_pose   /webcam/pose/**",
-        "  out_flow   /webcam/flow/**",
-        "  out_all    everything",
+        "Outputs (CHOP) — all hands:",
+        "  out_hands           /webcam/hand/**  (all channels)",
+        "  out_hands_gestures  /webcam/hand/*/gesture/*",
+        "  out_hands_fingers   /webcam/hand/*/finger/*",
+        "  out_hands_tips      /webcam/hand/*/tip/*",
+        "  out_hands_landmarks /webcam/hand/*/landmarks",
+        "",
+        "  hand/0 = LEFT hand   hand/1 = RIGHT hand",
+        "  hand/*/side: 0.0=left  1.0=right",
+        "",
+        "Outputs (CHOP) — other trackers:",
+        "  out_face            /webcam/face/**",
+        "  out_pose            /webcam/pose/**",
+        "  out_flow            /webcam/flow/**",
+        "  out_all             everything unfiltered",
         "",
         "Example expressions:",
-        "  op('webcam_osc/out_video')             # TOP",
-        "  op('webcam_osc/out_hands')['pinch']",
+        "  op('webcam_osc/out_video')                      # TOP",
+        "  op('webcam_osc/out_hands_gestures')['gesture/fist']",
+        "  op('webcam_osc/out_hands_fingers')['finger/index/open']",
         "  op('webcam_osc/out_face')['mouth_open']",
         "  op('webcam_osc/out_flow')['magnitude']",
     ])
