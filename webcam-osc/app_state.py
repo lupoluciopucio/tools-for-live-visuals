@@ -20,6 +20,9 @@ class AppState:
         # Latest JPEG-encoded frame for the web preview
         self._frame_jpeg: bytes | None = None
         self._frame_lock = threading.Lock()
+        # Video playback controls (ephemeral — not persisted in config)
+        self._video_playing: bool = True
+        self._video_loop: bool = True
 
     # ------------------------------------------------------------------ config
 
@@ -70,6 +73,30 @@ class AppState:
         with self._lock:
             new = [(addr, val) for seq, addr, val in self._osc_log if seq > last_seq]
             return self._osc_seq, new
+
+    # -------------------------------------------------------------- video
+
+    def get_video_playing(self) -> bool:
+        with self._lock:
+            return self._video_playing
+
+    def set_video_playing(self, playing: bool):
+        with self._lock:
+            self._video_playing = playing
+
+    def get_video_loop(self) -> bool:
+        with self._lock:
+            return self._video_loop
+
+    def set_video_loop(self, loop: bool):
+        with self._lock:
+            self._video_loop = loop
+
+    def reset_video_state(self):
+        """Called when a new video is loaded."""
+        with self._lock:
+            self._video_playing = True
+            self._video_loop = True
 
 
 # ------------------------------------------------------------------ helpers

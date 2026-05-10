@@ -12,6 +12,13 @@ camera:
   fps: 30
   rotation: 0       # 0, 90, 180, 270 — rotate frame (iPhone Continuity Camera sends landscape regardless of orientation)
 
+# Internal resolution fed to MediaPipe trackers.
+# Smaller = faster. 320×240 is ~4× fewer pixels than 640×480 with negligible
+# detection quality loss. Increase only if you need sub-pixel landmark accuracy.
+tracking:
+  width: 320
+  height: 240
+
 preview:
   enabled: false   # feed is shown in the web UI; set true to also open a local OpenCV window
   window_name: "webcam-osc"

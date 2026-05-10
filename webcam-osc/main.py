@@ -5,14 +5,36 @@ import time
 import webbrowser
 
 import cv2
+import numpy as np
 import uvicorn
 import yaml
 
 from app_state import AppState
-from camera import Camera
+from camera import Camera, VideoFileSource
 from models_setup import ensure_models
 from osc_client import OscClient
 from trackers.base import BaseTracker
+
+
+def _letterbox(frame: np.ndarray, tw: int, th: int) -> np.ndarray:
+    """Fit frame into (tw × th) preserving aspect ratio; pad with black bars."""
+    h, w = frame.shape[:2]
+    scale = min(tw / w, th / h)
+    nw, nh = int(w * scale), int(h * scale)
+    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    out = np.zeros((th, tw, 3), dtype=np.uint8)
+    x, y = (tw - nw) // 2, (th - nh) // 2
+    out[y:y + nh, x:x + nw] = resized
+    return out
+
+
+def _fit_resize(frame: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
+    """Scale frame to fit within (max_w × max_h) preserving aspect ratio. No padding."""
+    h, w = frame.shape[:2]
+    scale = min(max_w / w, max_h / h)
+    if abs(scale - 1.0) < 0.01:
+        return frame
+    return cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LINEAR)
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -132,7 +154,6 @@ def main():
         port=working_cfg["osc"]["port"],
     )
     print(f"  OSC     -> {working_cfg['osc']['host']}:{working_cfg['osc']['port']}")
-    print(f"  Camera  -> index {working_cfg['camera']['index']}")
     print("  Trackers:")
     ensure_models(working_cfg.get("trackers", {}))
     trackers = build_trackers(working_cfg)
@@ -141,16 +162,23 @@ def main():
     window_name  = working_cfg.get("preview", {}).get("window_name", "webcam-osc")
 
     cam_cfg = working_cfg["camera"]
-    cam = Camera(
-        index=cam_cfg.get("index", 0),
-        width=cam_cfg.get("width", 640),
-        height=cam_cfg.get("height", 480),
-        fps=cam_cfg.get("fps", 30),
-    )
+    _video_path = cam_cfg.get("video_path")
+    if _video_path:
+        source = VideoFileSource(_video_path)
+        source_fps: float | None = source.fps
+        print(f"  Source  -> video: {_video_path}")
+    else:
+        source = Camera(
+            index=cam_cfg.get("index", 0),
+            width=cam_cfg.get("width", 640),
+            height=cam_cfg.get("height", 480),
+            fps=cam_cfg.get("fps", 30),
+        )
+        source_fps = None
+        print(f"  Camera  -> index {cam_cfg.get('index', 0)}")
 
-    print("  Press 'q' in the preview window (or Ctrl-C) to quit.\n")
-
-    prev_frame  = None
+    prev_frame       = None
+    prev_track_frame = None
     frame_count = 0
     t_start     = time.perf_counter()
 
@@ -170,20 +198,35 @@ def main():
                     osc = OscClient(new_cfg["osc"]["host"], new_cfg["osc"]["port"])
                     print(f"  OSC -> {new_cfg['osc']['host']}:{new_cfg['osc']['port']}")
 
-                # Re-create camera if index or resolution changed
+                # Re-create source if video path or camera params changed
                 nc, oc = new_cfg["camera"], working_cfg["camera"]
-                if (nc.get("index") != oc.get("index") or
+                new_vp = nc.get("video_path")
+                old_vp = oc.get("video_path")
+                source_needs_rebuild = (
+                    new_vp != old_vp or
+                    (not new_vp and (
+                        nc.get("index") != oc.get("index") or
                         nc.get("width") != oc.get("width") or
-                        nc.get("height") != oc.get("height")):
-                    cam.release()
-                    cam = Camera(
-                        index=nc.get("index", 0),
-                        width=nc.get("width", 640),
-                        height=nc.get("height", 480),
-                        fps=nc.get("fps", 30),
-                    )
+                        nc.get("height") != oc.get("height")
+                    ))
+                )
+                if source_needs_rebuild:
+                    source.release()
+                    if new_vp:
+                        source = VideoFileSource(new_vp)
+                        source_fps = source.fps
+                        print(f"  Source -> video: {new_vp}")
+                    else:
+                        source = Camera(
+                            index=nc.get("index", 0),
+                            width=nc.get("width", 640),
+                            height=nc.get("height", 480),
+                            fps=nc.get("fps", 30),
+                        )
+                        source_fps = None
+                        print(f"  Source -> camera index {nc.get('index', 0)}")
                     prev_frame = None
-                    print(f"  Camera -> index {nc.get('index', 0)}")
+                    prev_track_frame = None
 
                 # Rebuild trackers
                 release_trackers(trackers)
@@ -194,10 +237,55 @@ def main():
                 working_cfg = new_cfg
 
             # ── frame loop ───────────────────────────────────────────────────
-            frame = cam.read()
-            if frame is None:
-                print("Camera read failed — exiting.")
-                break
+            frame_t = time.perf_counter()
+            _is_video = bool(working_cfg["camera"].get("video_path"))
+
+            if _is_video:
+                _playing = app_state.get_video_playing()
+                _looping = app_state.get_video_loop()
+                if not _playing:
+                    frame = source.last_frame()
+                    if frame is None:
+                        time.sleep(0.033)
+                        continue
+                else:
+                    # Skip frames when processing is slower than video FPS
+                    # so playback stays real-time rather than falling behind.
+                    if source_fps and source_fps > 0:
+                        _budget = 1.0 / source_fps
+                        _debt = time.perf_counter() - frame_t
+                        while _debt > _budget * 1.5:
+                            _skip = source.read()
+                            if _skip is None:
+                                break
+                            _debt -= _budget
+
+                    frame = source.read()
+                    if frame is None:  # EOF
+                        if _looping:
+                            source.seek_start()
+                            frame = source.read()
+                        if frame is None:
+                            app_state.set_video_playing(False)
+                            frame = source.last_frame()
+                            if frame is None:
+                                time.sleep(0.033)
+                                continue
+
+                # Fit to display bounds preserving aspect ratio.
+                # Auto-swap width/height for portrait content so vertical
+                # space is used instead of adding side bars.
+                _dw = working_cfg["camera"].get("width", 640)
+                _dh = working_cfg["camera"].get("height", 480)
+                _fh, _fw = frame.shape[:2]
+                if _fh > _fw:  # portrait video — use a taller bounding box
+                    _dw, _dh = min(_dw, _dh), max(_dw, _dh)
+                frame = _fit_resize(frame, _dw, _dh)
+            else:
+                frame = source.read()
+                if frame is None:
+                    print("Camera read failed — exiting.")
+                    break
 
             rot = working_cfg.get("camera", {}).get("rotation", 0)
             if rot == 90:
@@ -207,14 +295,37 @@ def main():
             elif rot == 270:
                 frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
+            # ── track at reduced resolution ────────────────────────────────────
+            # Compute tracking dims by preserving the display frame's aspect
+            # ratio within the configured tracking budget. This handles both
+            # landscape (640×480 → 320×240) and portrait (360×640 → 180×320)
+            # content without squishing.
+            _disw = frame.shape[1]
+            _dish = frame.shape[0]
+            _tc   = working_cfg.get("tracking", {})
+            _max_side = max(_tc.get("width", 320), _tc.get("height", 240))
+            _t_scale  = min(_max_side / _disw, _max_side / _dish)
+            _trw = int(_disw * _t_scale)
+            _trh = int(_dish * _t_scale)
+            if _trw != _disw or _trh != _dish:
+                track_frame = cv2.resize(frame, (_trw, _trh), interpolation=cv2.INTER_LINEAR)
+            else:
+                track_frame = frame
+
             all_pairs: list = []
             for tracker in trackers:
-                pairs = tracker.process(frame, prev_frame)
+                pairs = tracker.process(track_frame, prev_track_frame)
                 all_pairs.extend(pairs)
 
-            # Mirror AFTER tracker processing: MediaPipe saw the real frame
-            # (correct left/right handedness), preview shows natural mirror view.
-            frame = cv2.flip(frame, 1)
+            # Mirror only for live camera — video files are already oriented
+            if not _is_video:
+                track_frame = cv2.flip(track_frame, 1)
+
+            # Scale annotated track_frame back up for the web preview
+            if _trw != _disw or _trh != _dish:
+                frame = cv2.resize(track_frame, (_disw, _dish), interpolation=cv2.INTER_LINEAR)
+            else:
+                frame = track_frame
 
             osc.send_pairs(all_pairs)
 
@@ -240,8 +351,14 @@ def main():
                 if ret:
                     app_state.set_frame(jpeg.tobytes())
 
-            prev_frame   = frame.copy()
+            prev_track_frame = track_frame.copy()
+            prev_frame       = frame.copy()
             frame_count += 1
+
+            # Throttle video playback to its native FPS (camera read blocks naturally)
+            if _is_video and source_fps:
+                elapsed = time.perf_counter() - frame_t
+                time.sleep(max(0.0, 1.0 / source_fps - elapsed))
 
             if show_preview:
                 cv2.imshow(window_name, frame)
@@ -251,7 +368,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        cam.release()
+        source.release()
         release_trackers(trackers)
         if show_preview:
             cv2.destroyAllWindows()

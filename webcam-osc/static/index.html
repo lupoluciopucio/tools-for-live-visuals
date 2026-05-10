@@ -85,6 +85,11 @@
     backdrop-filter: blur(4px);
   }
   .video-overlay:hover { color: var(--text); border-color: var(--text); }
+  /* "float" button sits to the left of "hide" */
+  #pip-toggle  { right: 70px; }
+  #video-toggle { right: 8px; }
+  /* dim the main feed while PiP is active so it's clear where to look */
+  #video-feed.pip-active { opacity: 0.15; transition: opacity .3s; }
 
   /* ---- rows ---- */
   .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -289,6 +294,7 @@
 <h1>webcam-osc</h1>
 <div class="video-wrap" id="video-wrap">
   <img id="video-feed" src="/video" alt="webcam feed">
+  <span class="video-overlay" id="pip-toggle">float</span>
   <span class="video-overlay" id="video-toggle">hide</span>
 </div>
 </div>
@@ -317,7 +323,8 @@
   <div class="row">
     <label>Resolution</label>
     <select id="cam-res">
-      <option value="640x480">640 × 480</option>
+      <option value="320x240">320 × 240 — fast</option>
+      <option value="640x480">640 × 480 — quality</option>
       <option value="1280x720">1280 × 720</option>
       <option value="1920x1080">1920 × 1080</option>
     </select>
@@ -332,6 +339,26 @@
     </select>
   </div>
 </section>
+
+<!-- Video playback controls (shown when a file is loaded) -->
+<section id="video-section" style="display:none">
+  <h2>Video File</h2>
+  <div class="row">
+    <label>File</label>
+    <span id="video-filename" style="flex:1.5;font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">—</span>
+    <button id="replace-video-btn">Replace</button>
+  </div>
+  <div class="row">
+    <button id="play-pause-btn">Pause</button>
+    <label style="flex:1;">Loop</label>
+    <label class="toggle">
+      <input type="checkbox" id="loop-toggle" checked>
+      <span class="slider"></span>
+    </label>
+    <button id="clear-video-btn">Use Webcam</button>
+  </div>
+</section>
+<input type="file" id="video-file-input" accept="video/*" style="display:none">
 
 <!-- Fingers live readout -->
 <section id="finger-section" style="display:none">
@@ -370,6 +397,10 @@
   <span id="save-status"></span>
   <button id="save-btn">Apply</button>
 </div>
+
+<!-- PiP bridge elements — never visible in the page -->
+<canvas id="pip-canvas" style="display:none"></canvas>
+<video  id="pip-video"  muted playsinline style="display:none"></video>
 
 <script>
 // ─── state ──────────────────────────────────────────────────────────────────
@@ -453,22 +484,37 @@ async function loadCameras() {
   const res = await fetch("/api/cameras");
   const cams = await res.json();
   const sel = document.getElementById("cam-select");
-  sel.innerHTML = cams.map(c => `<option value="${c.index}">${c.name}</option>`).join("");
+  sel.innerHTML =
+    cams.map(c => `<option value="${c.index}">${c.name}</option>`).join("") +
+    `<option disabled style="color:var(--border)">──────────</option>` +
+    `<option value="__video__">Video file…</option>`;
   const preferred = cams.find(c => c.preferred);
   const idx = preferred ? preferred.index : (cfg.camera?.index ?? 0);
-  sel.value = String(idx);
-  // If the preferred camera differs from what the server is currently using,
-  // silently apply so the running process switches without requiring manual Apply.
-  const serverIdx = cfg.camera?.index ?? 0;
-  if (cfg.camera) cfg.camera.index = idx;
-  if (idx !== serverIdx) {
-    await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cfg),
-    });
+  // If a video is active, show that in the selector
+  if (cfg.camera?.video_path) {
+    sel.value = "__video__";
+  } else {
+    sel.value = String(idx);
+    const serverIdx = cfg.camera?.index ?? 0;
+    if (cfg.camera) cfg.camera.index = idx;
+    if (idx !== serverIdx) {
+      await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      });
+    }
   }
   sel.addEventListener("change", () => {
+    if (sel.value === "__video__") {
+      document.getElementById("video-file-input").click();
+      return;
+    }
+    // Switching back to a real camera — clear the video path
+    if (cfg.camera?.video_path) {
+      cfg.camera.video_path = null;
+      document.getElementById('video-section').style.display = 'none';
+    }
     setNested(cfg, "camera.index", parseInt(sel.value));
     markDirty();
   });
@@ -481,9 +527,10 @@ function renderAll() {
   document.getElementById("osc-port").value = cfg.osc?.port ?? 9000;
 
   // Camera resolution + rotation
-  const w = cfg.camera?.width ?? 640;
-  const h = cfg.camera?.height ?? 480;
-  document.getElementById("cam-res").value = `${w}x${h}`;
+  // Use tracking resolution as the dropdown value so it reflects actual tracking quality.
+  const tw = cfg.tracking?.width ?? cfg.camera?.width ?? 640;
+  const th = cfg.tracking?.height ?? cfg.camera?.height ?? 480;
+  document.getElementById("cam-res").value = `${tw}x${th}`;
   document.getElementById("cam-rotation").value = String(cfg.camera?.rotation ?? 0);
 
   // Trackers
@@ -494,6 +541,17 @@ function renderAll() {
   syncGesturePanel(); syncFingerPanel();
   loadCameras();
   bindOscInputs();
+  // Restore video section if a file was already loaded
+  if (cfg.camera?.video_path) {
+    const name = cfg.camera.video_path.split('/').pop();
+    document.getElementById('video-filename').textContent = name;
+    document.getElementById('video-section').style.display = '';
+    fetch('/api/video/state').then(r => r.json()).then(s => {
+      _videoPlaying = s.playing;
+      _updatePlayPauseBtn();
+      document.getElementById('loop-toggle').checked = s.loop;
+    });
+  }
   bindResInput();
 }
 
@@ -581,6 +639,9 @@ function bindResInput() {
     const [w, h] = e.target.value.split("x").map(Number);
     setNested(cfg, "camera.width", w);
     setNested(cfg, "camera.height", h);
+    // Keep tracking resolution in sync so the quality/speed choice is consistent.
+    setNested(cfg, "tracking.width", w);
+    setNested(cfg, "tracking.height", h);
     markDirty();
   });
   document.getElementById("cam-rotation").addEventListener("change", (e) => {
@@ -766,21 +827,163 @@ document.getElementById("clear-btn").addEventListener("click", () => {
   document.getElementById("osc-log").innerHTML = "";
 });
 
+// ─── video file playback ───────────────────────────────────────────────────
+let _videoPlaying = true;
+
+function _updatePlayPauseBtn() {
+  document.getElementById('play-pause-btn').textContent = _videoPlaying ? 'Pause' : 'Play';
+}
+
+// File input: upload chosen video
+document.getElementById('video-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) {
+    // User cancelled — reset selector to current camera
+    const sel = document.getElementById('cam-select');
+    sel.value = String(cfg.camera?.index ?? 0);
+    return;
+  }
+  const form = new FormData();
+  form.append('file', file);
+  const res  = await fetch('/api/video/upload', { method: 'POST', body: form });
+  const data = await res.json();
+  document.getElementById('video-filename').textContent = data.name;
+  _videoPlaying = true;
+  _updatePlayPauseBtn();
+  document.getElementById('video-section').style.display = '';
+  document.getElementById('loop-toggle').checked = true;
+});
+
+document.getElementById('play-pause-btn').addEventListener('click', async () => {
+  _videoPlaying = !_videoPlaying;
+  _updatePlayPauseBtn();
+  await fetch('/api/video/control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ playing: _videoPlaying }),
+  });
+});
+
+document.getElementById('loop-toggle').addEventListener('change', async (e) => {
+  await fetch('/api/video/control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ loop: e.target.checked }),
+  });
+});
+
+document.getElementById('replace-video-btn').addEventListener('click', () => {
+  document.getElementById('video-file-input').click();
+});
+
+document.getElementById('clear-video-btn').addEventListener('click', async () => {
+  await fetch('/api/video/control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'clear' }),
+  });
+  if (cfg.camera) cfg.camera.video_path = null;
+  document.getElementById('video-section').style.display = 'none';
+  document.getElementById('video-file-input').value = '';
+  loadCameras();
+});
+
 // ─── video toggle ─────────────────────────────────────────────────────────
+let _feedVisible = true;
 document.getElementById("video-toggle").addEventListener("click", () => {
   const img  = document.getElementById("video-feed");
   const wrap = document.getElementById("video-wrap");
   const btn  = document.getElementById("video-toggle");
-  if (img.src.endsWith("/video")) {
-    img.src = "";
-    wrap.style.display = "none";
-    btn.textContent = "show";
-  } else {
+  _feedVisible = !_feedVisible;
+  if (_feedVisible) {
     img.src = "/video";
     wrap.style.display = "";
     btn.textContent = "hide";
+  } else {
+    // Stop PiP first so the bridge img stream can be paused cleanly
+    if (_pipActive) _stopPip();
+    img.src = "";
+    wrap.style.display = "none";
+    btn.textContent = "show";
   }
 });
+
+// ─── picture-in-picture floating window ───────────────────────────────────
+let _pipActive  = false;
+let _pipRafId   = null;
+
+const _pipImg    = document.getElementById("video-feed");
+const _pipCanvas = document.getElementById("pip-canvas");
+const _pipVideo  = document.getElementById("pip-video");
+const _pipBtn    = document.getElementById("pip-toggle");
+
+function _pipDrawLoop() {
+  if (!_pipActive) return;
+  if (_pipImg.naturalWidth > 0) {
+    if (_pipCanvas.width  !== _pipImg.naturalWidth ||
+        _pipCanvas.height !== _pipImg.naturalHeight) {
+      _pipCanvas.width  = _pipImg.naturalWidth;
+      _pipCanvas.height = _pipImg.naturalHeight;
+    }
+    _pipCanvas.getContext("2d").drawImage(_pipImg, 0, 0);
+  }
+  _pipRafId = requestAnimationFrame(_pipDrawLoop);
+}
+
+async function _startPip() {
+  if (!document.pictureInPictureEnabled) {
+    const s = document.getElementById("save-status");
+    const bar = document.getElementById("save-bar");
+    bar.style.display = "flex";
+    s.textContent = "Picture-in-Picture not supported in this browser";
+    setTimeout(() => { bar.style.display = "none"; s.textContent = ""; }, 3000);
+    return;
+  }
+  // Make sure the main feed is visible — the canvas bridge reads from the img
+  if (!_feedVisible) {
+    document.getElementById("video-toggle").click();
+  }
+  try {
+    _pipActive = true;
+    _pipCanvas.width  = _pipImg.naturalWidth  || 640;
+    _pipCanvas.height = _pipImg.naturalHeight || 480;
+    _pipDrawLoop();
+
+    const stream = _pipCanvas.captureStream(30);
+    _pipVideo.srcObject = stream;
+    await _pipVideo.play();
+    await _pipVideo.requestPictureInPicture();
+
+    _pipImg.classList.add("pip-active");
+    _pipBtn.textContent = "exit float";
+  } catch (err) {
+    console.error("PiP error:", err);
+    _stopPip();
+  }
+}
+
+function _stopPip() {
+  _pipActive = false;
+  if (_pipRafId) { cancelAnimationFrame(_pipRafId); _pipRafId = null; }
+  if (_pipVideo.srcObject) {
+    _pipVideo.srcObject.getTracks().forEach(t => t.stop());
+    _pipVideo.srcObject = null;
+  }
+  _pipImg.classList.remove("pip-active");
+  _pipBtn.textContent = "float";
+}
+
+_pipBtn.addEventListener("click", () => {
+  if (_pipActive) {
+    if (document.pictureInPictureElement) document.exitPictureInPicture();
+    else _stopPip();
+  } else {
+    _startPip();
+  }
+});
+
+// Native PiP window closed via its OS close button
+_pipVideo.addEventListener("leavepictureinpicture", _stopPip);
 
 // ─── init ─────────────────────────────────────────────────────────────────────
 loadConfig();

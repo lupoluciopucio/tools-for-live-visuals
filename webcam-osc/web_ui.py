@@ -1,17 +1,19 @@
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import cv2
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app_state import AppState
 
 _STATIC = Path(__file__).parent / "static"
+_UPLOAD_DIR = Path(__file__).parent / "uploads"
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
@@ -82,6 +84,41 @@ async def get_cameras():
 async def shutdown():
     state.request_shutdown()
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/video/upload")
+async def upload_video(file: UploadFile = File(...)):
+    """Save an uploaded video file and switch the source to it."""
+    _UPLOAD_DIR.mkdir(exist_ok=True)
+    dest = _UPLOAD_DIR / file.filename
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    state.reset_video_state()
+    state.update_config({"camera": {"video_path": str(dest)}})
+    return JSONResponse({"ok": True, "name": file.filename, "path": str(dest)})
+
+
+@app.post("/api/video/control")
+async def video_control(body: dict):
+    """Set play/pause, loop, or clear the video source."""
+    if "playing" in body:
+        state.set_video_playing(bool(body["playing"]))
+    if "loop" in body:
+        state.set_video_loop(bool(body["loop"]))
+    if body.get("action") == "clear":
+        state.update_config({"camera": {"video_path": None}})
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/video/state")
+async def video_state():
+    """Current video playback state (for UI sync on page load)."""
+    cfg = state.get_config()
+    return JSONResponse({
+        "video_path": cfg.get("camera", {}).get("video_path"),
+        "playing": state.get_video_playing(),
+        "loop": state.get_video_loop(),
+    })
 
 
 @app.get("/video")
