@@ -357,6 +357,28 @@
     </label>
     <button id="clear-video-btn">Use Webcam</button>
   </div>
+  <!-- Pre-process & Export row -->
+  <div class="row" style="margin-top:4px;">
+    <button id="preprocess-btn">Pre-process &amp; Export</button>
+    <span id="preprocess-status" style="flex:1;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text2);text-align:right;"></span>
+  </div>
+  <!-- Progress bar (hidden until processing starts) -->
+  <div id="preprocess-progress-wrap" style="display:none;margin-bottom:6px;">
+    <div style="height:5px;border-radius:3px;background:var(--surface2);border:1px solid var(--border);overflow:hidden;">
+      <div id="preprocess-progress-fill" style="height:100%;width:0%;background:var(--on);border-radius:3px;transition:width .3s linear;"></div>
+    </div>
+  </div>
+  <!-- Download links (hidden until done) -->
+  <div id="preprocess-downloads" style="display:none;" class="row">
+    <a id="dl-video-btn" href="/api/video/preprocess/download/video" download
+       style="flex:1;text-align:center;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:5px 10px;text-decoration:none;">
+      ⬇ Tracked Video
+    </a>
+    <a id="dl-json-btn" href="/api/video/preprocess/download/json" download
+       style="flex:1;text-align:center;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text2);border:1px solid var(--border);border-radius:20px;padding:5px 10px;text-decoration:none;">
+      ⬇ Tracking JSON
+    </a>
+  </div>
 </section>
 <input type="file" id="video-file-input" accept="video/*" style="display:none">
 
@@ -885,7 +907,61 @@ document.getElementById('clear-video-btn').addEventListener('click', async () =>
   if (cfg.camera) cfg.camera.video_path = null;
   document.getElementById('video-section').style.display = 'none';
   document.getElementById('video-file-input').value = '';
+  _resetPreprocessUI();
   loadCameras();
+});
+
+// ─── pre-process & export ──────────────────────────────────────────────────
+let _preprocessPollId = null;
+
+function _resetPreprocessUI() {
+  document.getElementById('preprocess-status').textContent = '';
+  document.getElementById('preprocess-progress-wrap').style.display = 'none';
+  document.getElementById('preprocess-progress-fill').style.width = '0%';
+  document.getElementById('preprocess-downloads').style.display = 'none';
+  document.getElementById('preprocess-btn').disabled = false;
+  if (_preprocessPollId) { clearInterval(_preprocessPollId); _preprocessPollId = null; }
+}
+
+async function _pollPreprocessStatus() {
+  try {
+    const res  = await fetch('/api/video/preprocess/status');
+    const data = await res.json();
+    const pct  = Math.round((data.progress || 0) * 100);
+    document.getElementById('preprocess-progress-fill').style.width = pct + '%';
+
+    if (data.status === 'done') {
+      clearInterval(_preprocessPollId); _preprocessPollId = null;
+      document.getElementById('preprocess-progress-wrap').style.display = 'none';
+      document.getElementById('preprocess-status').textContent = 'Done ✓';
+      document.getElementById('preprocess-downloads').style.display = '';
+      document.getElementById('preprocess-btn').disabled = false;
+    } else if (data.status === 'error') {
+      clearInterval(_preprocessPollId); _preprocessPollId = null;
+      document.getElementById('preprocess-status').textContent = 'Error: ' + (data.error || '?');
+      document.getElementById('preprocess-progress-wrap').style.display = 'none';
+      document.getElementById('preprocess-btn').disabled = false;
+    } else {
+      document.getElementById('preprocess-status').textContent = pct + '%';
+    }
+  } catch (_) {}
+}
+
+document.getElementById('preprocess-btn').addEventListener('click', async () => {
+  _resetPreprocessUI();
+  document.getElementById('preprocess-btn').disabled = true;
+  document.getElementById('preprocess-status').textContent = 'Starting…';
+  document.getElementById('preprocess-progress-wrap').style.display = '';
+
+  const res = await fetch('/api/video/preprocess', { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json();
+    document.getElementById('preprocess-status').textContent = err.error || 'Error';
+    document.getElementById('preprocess-progress-wrap').style.display = 'none';
+    document.getElementById('preprocess-btn').disabled = false;
+    return;
+  }
+  _preprocessPollId = setInterval(_pollPreprocessStatus, 500);
 });
 
 // ─── video toggle ─────────────────────────────────────────────────────────

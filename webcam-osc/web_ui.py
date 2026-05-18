@@ -3,11 +3,12 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import cv2
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app_state import AppState
@@ -119,6 +120,64 @@ async def video_state():
         "playing": state.get_video_playing(),
         "loop": state.get_video_loop(),
     })
+
+
+@app.post("/api/video/preprocess")
+async def preprocess_video():
+    """Start offline batch tracking for the currently loaded video."""
+    cfg = state.get_config()
+    video_path = cfg.get("camera", {}).get("video_path")
+    if not video_path:
+        return JSONResponse({"ok": False, "error": "No video loaded"}, status_code=400)
+    ps = state.get_preprocess_state()
+    if ps["status"] == "processing":
+        return JSONResponse({"ok": False, "error": "Already processing"}, status_code=409)
+
+    state.set_preprocess_state("processing", 0.0)
+
+    def _run():
+        import batch as _batch
+        try:
+            total = [1]  # mutable reference for closure
+            import cv2 as _cv2
+            _cap = _cv2.VideoCapture(video_path)
+            if _cap.isOpened():
+                total[0] = max(1, int(_cap.get(_cv2.CAP_PROP_FRAME_COUNT)))
+                _cap.release()
+
+            def _progress(n, t):
+                state.set_preprocess_state("processing", n / max(1, t))
+
+            vid, jsn = _batch.batch_process(video_path, cfg, _progress)
+            state.set_preprocess_state("done", 1.0, video_out=vid, json_out=jsn)
+        except Exception as exc:
+            state.set_preprocess_state("error", 0.0, error=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/video/preprocess/status")
+async def preprocess_status():
+    return JSONResponse(state.get_preprocess_state())
+
+
+@app.get("/api/video/preprocess/download/video")
+async def download_tracked_video():
+    ps = state.get_preprocess_state()
+    path = ps.get("video_out")
+    if not path or not Path(path).exists():
+        return JSONResponse({"error": "Not ready"}, status_code=404)
+    return FileResponse(path, media_type="video/mp4", filename=Path(path).name)
+
+
+@app.get("/api/video/preprocess/download/json")
+async def download_tracking_json():
+    ps = state.get_preprocess_state()
+    path = ps.get("json_out")
+    if not path or not Path(path).exists():
+        return JSONResponse({"error": "Not ready"}, status_code=404)
+    return FileResponse(path, media_type="application/json", filename=Path(path).name)
 
 
 @app.get("/video")

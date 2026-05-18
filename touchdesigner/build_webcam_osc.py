@@ -12,36 +12,98 @@
 #
 # EVERY FUTURE PROJECT:
 #   Drag webcam_osc.tox into any .toe — done.
-#   Set Port / UI Port custom params, start webcam-osc, everything appears.
+#   Set custom params (Port, UI Port, Mode, Tracking File, Video File).
 #
-# WHAT IT CREATES (inside the Base COMP):
+# TWO MODES (custom par "Mode"):
+#   0 = Live   — OSC from Python app + MJPEG webcam stream
+#   1 = Baked  — JSON + pre-rendered tracked video (frame-locked, no Python needed)
 #
-#   videostreaminTOP  ←─ MJPEG  http://127.0.0.1:UIPort/video
-#       └─ out_video (null TOP)   ← annotated camera image, wire anywhere
+# BAKED WORKFLOW:
+#   1. In the webcam-osc web UI, upload a video → "Pre-process & Export"
+#   2. Download the _tracked.mp4 and _tracking.json files
+#   3. Set Mode → Baked, point Trackingfile + Videofile to those files
+#   4. out_video and all CHOP outputs are now frame-locked to TD's timeline
+#   5. Offline export (Realtime OFF) works perfectly — no OSC lag
 #
-#   oscinCHOP  ←─ listens on OSC Port (expr-linked to custom par)
-#       │
-#       ├─ select_hands → out_hands    /webcam/hand/**
-#       ├─ select_face  → out_face     /webcam/face/**
-#       ├─ select_pose  → out_pose     /webcam/pose/**
-#       ├─ select_flow  → out_flow     /webcam/flow/**
-#       └─────────────── out_all       (everything unfiltered)
+# OUTPUTS (same in both modes):
+#   out_video               TOP  — annotated video
+#   out_hands               CHOP — /webcam/hand/** (all)
+#   out_hands_gestures      CHOP — gesture channels
+#   out_hands_fingers       CHOP — finger curl/open channels
+#   out_hands_tips          CHOP — fingertip x/y channels
+#   out_hands_landmarks     CHOP — raw landmark coords
+#   out_face / out_pose / out_flow / out_all
 #
-# REFERENCING ELSEWHERE IN TD:
-#   op('webcam_osc/out_video')           ← annotated webcam TOP
-#   op('webcam_osc/out_hands')['pinch']
-#   op('webcam_osc/out_face')['mouth_open']
-#   op('webcam_osc/out_flow')['magnitude']
-#
-# KEY OSC CHANNELS (from webcam-osc/README.md):
-#   /webcam/hand/0/pinch              float  index-thumb distance 0-1
-#   /webcam/hand/0/tip/index/x        float  normalised 0-1
-#   /webcam/face/mouth_open           float  0-1
-#   /webcam/face/brow_raise           float  0-1
-#   /webcam/face/head_tilt            float  degrees
-#   /webcam/pose/left_wrist/x         float  normalised 0-1
-#   /webcam/flow/magnitude            float  mean optical flow magnitude
-#   /webcam/flow/direction            float  dominant angle 0-360 deg
+# REFERENCING:
+#   op('webcam_osc/out_video')
+#   op('webcam_osc/out_hands_gestures')['hand_0_gesture_fist']   # Baked
+#   op('webcam_osc/out_hands_gestures')['/webcam/hand/0/gesture/fist']  # Live
+
+
+# ── Script CHOP cook code (Baked mode) ────────────────────────────────────────
+# Reads _tracking.json, maps TD frame → video frame, outputs all channels.
+# Embedded as a string so the builder can write it into a Text DAT.
+_SCRIPT_CHOP_CODE = '''
+import json
+
+# Module-level state
+_cache     = {}      # {path: data}  — cached JSON
+_vid_frame = 0.0     # current playhead position (float, sub-frame accumulation)
+
+def cook(scriptOp):
+    global _cache, _vid_frame
+
+    scriptOp.clear()
+
+    # Touch me.time.frame — tells TD this CHOP depends on time, so it re-cooks every frame
+    _tick   = me.time.frame
+    td_fps  = project.cookRate
+
+    play    = int(parent().par.Play)
+    restart = int(parent().par.Restart)
+
+    if restart:
+        _vid_frame = 0.0
+
+    path = str(parent().par.Trackingfile)
+    if not path:
+        scriptOp.appendChan("playhead")[0] = 0.0
+        return
+
+    if path not in _cache:
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            _cache = {path: data}
+            _vid_frame = 0.0   # reset when a new file is loaded
+        except Exception as e:
+            debug("tracking_reader load error:", str(e))
+            scriptOp.appendChan("playhead")[0] = 0.0
+            return
+
+    data        = _cache[path]
+    channels    = data.get("channels", {})
+    video_fps   = data.get("fps", 30.0)
+    frame_count = data.get("frame_count", 1)
+
+    # Advance internal playhead by the fps ratio each cook (pauses cleanly when play=0)
+    if play:
+        _vid_frame += video_fps / td_fps
+        if _vid_frame >= frame_count:
+            _vid_frame = 0.0   # loop
+
+    vid_frame = max(0, min(int(_vid_frame), frame_count - 1))
+
+    for address, values in channels.items():
+        name = address.lstrip("/").replace("/", "_")
+        if address.startswith("/webcam/"):
+            name = address[len("/webcam/"):].replace("/", "_")
+        ch = scriptOp.appendChan(name)
+        ch[0] = float(values[vid_frame]) if vid_frame < len(values) else 0.0
+
+    # Shared playhead channel — moviefileinTOP tracks this to stay in sync
+    scriptOp.appendChan("playhead")[0] = float(vid_frame)
+'''
 
 
 def build_webcam_osc():
@@ -84,116 +146,192 @@ def build_webcam_osc():
     p_uiport.clampMax = True
     p_uiport.help     = 'Must match ui.port in webcam-osc/config.yaml (default 8080)'
 
-    # ── Video stream TOP (annotated MJPEG from webcam-osc web server) ─────────
-    vstop = b.create(videostreaminTOP, 'videostream1')
+    p_mode = page.appendMenu('Mode', label='Mode')[0]
+    p_mode.menuNames   = ['live', 'baked']
+    p_mode.menuLabels  = ['Live (OSC + webcam)', 'Baked (JSON + video)']
+    p_mode.default     = 0
+    p_mode.val         = 0
+    p_mode.help        = 'Live: receive OSC from Python app. Baked: read pre-processed JSON + video file.'
+
+    p_trackfile = page.appendFile('Trackingfile', label='Tracking JSON')[0]
+    p_trackfile.help = 'Path to _tracking.json exported by webcam-osc Pre-process & Export'
+
+    p_vidfile = page.appendFile('Videofile', label='Tracked Video')[0]
+    p_vidfile.help = 'Path to _tracked.mp4 exported by webcam-osc Pre-process & Export'
+
+    p_play = page.appendToggle('Play', label='Play')[0]
+    p_play.default = True
+    p_play.val     = True
+    p_play.help    = 'Play / Pause baked video + tracking'
+
+    p_restart = page.appendPulse('Restart', label='Restart')[0]
+    p_restart.help = 'Jump back to frame 0'
+
+    p_sync = page.appendFloat('Syncoffset', label='Sync Offset (frames)')[0]
+    p_sync.default  = 0.0
+    p_sync.val      = 0.0
+    p_sync.min      = -60.0
+    p_sync.max      = 60.0
+    p_sync.clampMin = True
+    p_sync.clampMax = True
+    p_sync.help     = 'Nudge video frame relative to tracking (+ = video ahead, - = video behind)'
+
+    # ── LIVE: Video stream TOP (annotated MJPEG from webcam-osc web server) ───
+    vstop = b.create(videostreaminTOP, 'live_videostream')
     vstop.par.url.expr   = "'http://127.0.0.1:' + str(parent().par.Uiport) + '/video'"
-    vstop.nodeX, vstop.nodeY = -400, 380
-    vstop.comment = 'Annotated webcam feed — landmarks drawn by Python'
+    vstop.nodeX, vstop.nodeY = -600, 420
+    vstop.comment = 'LIVE: annotated webcam feed via MJPEG'
+
+    # ── BAKED: Movie File In TOP ───────────────────────────────────────────────
+    movtop = b.create(moviefileinTOP, 'baked_video')
+    movtop.par.file.expr      = "parent().par.Videofile"
+    movtop.par.playmode       = 'specify'           # Specify Index
+    movtop.par.indexunit      = 'indices'           # raw frame number — fps-independent
+    movtop.par.index.expr     = "op('tracking_reader')['playhead'] + parent().par.Syncoffset"
+    movtop.par.index.mode     = ParMode.EXPRESSION
+    movtop.nodeX, movtop.nodeY = -600, 340
+    movtop.comment = 'BAKED: frame-locked to tracking_reader playhead (indices unit)'
+
+    # ── Switch TOP (Live ↔ Baked) ──────────────────────────────────────────────
+    sw_top = b.create(switchTOP, 'switch_video')
+    sw_top.setInputs([vstop, movtop])
+    sw_top.par.index.expr = "parent().par.Mode"
+    sw_top.nodeX, sw_top.nodeY = -350, 380
+    sw_top.comment = '0=Live  1=Baked'
 
     out_video = b.create(outTOP, 'out_video')
-    out_video.setInputs([vstop])
-    out_video.nodeX, out_video.nodeY = -150, 380
-    out_video.comment = 'Annotated camera image — TOP output connector'
+    out_video.setInputs([sw_top])
+    out_video.nodeX, out_video.nodeY = -100, 380
+    out_video.comment = 'Annotated video — TOP output connector'
 
-    # ── OSC In CHOP ───────────────────────────────────────────────────────────
+    # ── LIVE: OSC In CHOP ─────────────────────────────────────────────────────
     oscin = b.create(oscinCHOP, 'oscin1')
     oscin.par.port.expr   = "parent().par.Port"
     oscin.par.active.expr = "parent().par.Active"
-    oscin.nodeX, oscin.nodeY = -400, 0
-    oscin.comment = 'Receives all /webcam/* channels'
+    oscin.nodeX, oscin.nodeY = -600, 0
+    oscin.comment = 'LIVE: receives all /webcam/* channels via OSC'
 
-    # ── Per-tracker Select → Null pairs ───────────────────────────────────────
-    trackers = [
+    # ── BAKED: Script CHOP (reads _tracking.json) ────────────────────────────
+    script_dat = b.create(textDAT, 'tracking_reader_script')
+    script_dat.text = _SCRIPT_CHOP_CODE
+    script_dat.nodeX, script_dat.nodeY = -600, -200
+    script_dat.comment = 'Cook script for tracking_reader Script CHOP'
+
+    script_chop = b.create(scriptCHOP, 'tracking_reader')
+    script_chop.par.callbacks = script_dat   # pass operator object, not string
+    script_chop.setInputs([oscin])           # dummy input — forces re-cook every frame
+    script_chop.nodeX, script_chop.nodeY = -600, -130
+    script_chop.comment = 'BAKED: per-frame tracking values from JSON'
+
+    # ── Switch CHOP helper: merge Live + Baked then pick by Mode ─────────────
+    # We create a Switch CHOP for each output group so patchers never need to
+    # rewire. Each Switch takes [live_select, baked_select] and is driven by Mode.
+
+    def make_output_pair(name, pattern, node_y):
+        """
+        Create: live_select_<name> → switch_<name> ← baked_select_<name>
+                                           ↓
+                                      out_<name>
+        """
+        # Live side: select from oscin
+        live_sel = b.create(selectCHOP, 'live_select_' + name)
+        live_sel.par.chop      = 'oscin1'
+        live_sel.par.channames = pattern
+        live_sel.nodeX         = -350
+        live_sel.nodeY         = node_y + 60
+        live_sel.comment       = 'LIVE: ' + pattern
+
+        # Baked side: select from script_chop (same pattern, but chan names use _)
+        baked_sel = b.create(selectCHOP, 'baked_select_' + name)
+        baked_sel.par.chop      = 'tracking_reader'
+        baked_sel.par.channames = pattern.replace('/', '_').replace('*', '*')
+        baked_sel.nodeX         = -350
+        baked_sel.nodeY         = node_y - 30
+        baked_sel.comment       = 'BAKED: ' + pattern
+
+        # Switch CHOP
+        sw = b.create(switchCHOP, 'switch_' + name)
+        sw.setInputs([live_sel, baked_sel])
+        sw.par.index.expr = "parent().par.Mode"
+        sw.nodeX, sw.nodeY = -100, node_y
+        sw.comment = '0=Live  1=Baked'
+
+        # Output connector
+        out = b.create(outCHOP, 'out_' + name)
+        out.setInputs([sw])
+        out.nodeX   = 150
+        out.nodeY   = node_y
+        out.comment = 'CHOP output connector'
+
+    tracker_groups = [
         ('hands', '*hand*',   250),
         ('face',  '*face*',    80),
         ('pose',  '*pose*',   -90),
         ('flow',  '*flow*',  -260),
     ]
+    for name, pattern, y in tracker_groups:
+        make_output_pair(name, pattern, y)
 
-    for name, pattern, y in trackers:
-        sel = b.create(selectCHOP, 'select_' + name)
-        sel.par.chop      = oscin.path
-        sel.par.channames = pattern
-        sel.nodeX         = -150
-        sel.nodeY         = y
-        sel.comment       = pattern
-
-        null = b.create(outCHOP, 'out_' + name)
-        null.setInputs([sel])
-        null.nodeX   = 100
-        null.nodeY   = y
-        null.comment = 'CHOP output connector'
-
-    # ── Hands sub-selects by signal type ──────────────────────────────────────
-    # Each reads directly from oscin so it works regardless of which send_*
-    # flags are enabled in config.yaml. In TD you pick the output you need.
     hand_subtypes = [
-        ('gestures',  '*hand*/gesture*',   -340),
-        ('fingers',   '*hand*/finger*',    -410),
-        ('tips',      '*hand*/tip*',       -480),
-        ('landmarks', '*hand*/landmark*',  -550),
+        ('hands_gestures',  '*hand*gesture*',   -370),
+        ('hands_fingers',   '*hand*finger*',    -450),
+        ('hands_tips',      '*hand*tip*',       -530),
+        ('hands_landmarks', '*hand*landmark*',  -610),
     ]
-    for suffix, pattern, y in hand_subtypes:
-        sel = b.create(selectCHOP, 'select_hands_' + suffix)
-        sel.par.chop      = oscin.path
-        sel.par.channames = pattern
-        sel.nodeX         = -150
-        sel.nodeY         = y
-        sel.comment       = pattern
+    for name, pattern, y in hand_subtypes:
+        make_output_pair(name, pattern, y)
 
-        null = b.create(outCHOP, 'out_hands_' + suffix)
-        null.setInputs([sel])
-        null.nodeX   = 100
-        null.nodeY   = y
-        null.comment = 'CHOP output connector'
-
-    # out_all: raw, everything (useful for discovering new channels)
+    # out_all: raw live OSC (no baked equivalent — use out_hands/face etc. in Baked mode)
     null_all = b.create(outCHOP, 'out_all')
     null_all.setInputs([oscin])
-    null_all.nodeX   =  100
-    null_all.nodeY   = -430
-    null_all.comment = 'All /webcam/* channels unfiltered — CHOP output connector'
+    null_all.nodeX   =  150
+    null_all.nodeY   = -700
+    null_all.comment = 'All live /webcam/* channels unfiltered (Live mode only)'
 
     # ── Info Text DAT ─────────────────────────────────────────────────────────
     txt = b.create(textDAT, 'info')
     txt.text = "\n".join([
-        "webcam-osc component",
-        "─────────────────────────────────────",
-        "Start the Python app:",
-        "  cd webcam-osc",
-        "  uv run python main.py",
+        "webcam-osc component  —  two modes",
+        "─────────────────────────────────────────────",
+        "Mode = Live  (default)",
+        "  Start Python app:  cd webcam-osc && uv run python main.py",
+        "  Outputs driven by live OSC + MJPEG stream",
+        "",
+        "Mode = Baked",
+        "  1. In the webcam-osc web UI, upload a video",
+        "  2. Click 'Pre-process & Export'",
+        "  3. Download _tracked.mp4 and _tracking.json",
+        "  4. Set Tracking JSON + Tracked Video params",
+        "  5. All outputs are now frame-locked (works with offline export)",
         "",
         "Outputs (TOP):",
-        "  out_video           annotated webcam image",
+        "  out_video              annotated video (Live: MJPEG / Baked: MP4)",
         "",
-        "Outputs (CHOP) — all hands:",
-        "  out_hands           /webcam/hand/**  (all channels)",
-        "  out_hands_gestures  /webcam/hand/*/gesture/*",
-        "  out_hands_fingers   /webcam/hand/*/finger/*",
-        "  out_hands_tips      /webcam/hand/*/tip/*",
-        "  out_hands_landmarks /webcam/hand/*/landmarks",
+        "Outputs (CHOP) — hands:",
+        "  out_hands              /webcam/hand/**  (all)",
+        "  out_hands_gestures     gesture channels",
+        "  out_hands_fingers      finger curl/open channels",
+        "  out_hands_tips         fingertip x/y channels",
+        "  out_hands_landmarks    raw landmark coords",
         "",
-        "  hand/0 = LEFT hand   hand/1 = RIGHT hand",
-        "  hand/*/side: 0.0=left  1.0=right",
+        "  hand/0 = LEFT   hand/1 = RIGHT",
         "",
         "Outputs (CHOP) — other trackers:",
-        "  out_face            /webcam/face/**",
-        "  out_pose            /webcam/pose/**",
-        "  out_flow            /webcam/flow/**",
-        "  out_all             everything unfiltered",
+        "  out_face / out_pose / out_flow / out_all (Live only)",
+        "",
+        "Channel name format in Baked mode:",
+        "  /webcam/hand/0/gesture/fist  →  hand_0_gesture_fist",
         "",
         "Example expressions:",
-        "  op('webcam_osc/out_video')                      # TOP",
-        "  op('webcam_osc/out_hands_gestures')['gesture/fist']",
-        "  op('webcam_osc/out_hands_fingers')['finger/index/open']",
-        "  op('webcam_osc/out_face')['mouth_open']",
-        "  op('webcam_osc/out_flow')['magnitude']",
+        "  op('webcam_osc/out_video')",
+        "  op('webcam_osc/out_hands_gestures')['hand_0_gesture_fist']  # Baked",
+        "  op('webcam_osc/out_hands_fingers')['hand_0_finger_index_open']  # Baked",
     ])
-    txt.nodeX, txt.nodeY = -400, -280
+    txt.nodeX, txt.nodeY = -600, -430
 
     print("webcam_osc created at /")
-    print("  out_video TOP   <- annotated webcam (MJPEG from Python)")
-    print("  out_hands/face/pose/flow CHOPs <- OSC data")
+    print("  Mode par: 0=Live (OSC+webcam)  1=Baked (JSON+video)")
+    print("  out_video TOP  |  out_hands / out_hands_gestures / ... CHOPs")
     print("Right-click the node -> Save Component... -> webcam_osc.tox")
 
 

@@ -23,6 +23,14 @@ class AppState:
         # Video playback controls (ephemeral — not persisted in config)
         self._video_playing: bool = True
         self._video_loop: bool = True
+        # Batch pre-processing state
+        self._preprocess: dict = {
+            "status":    "idle",   # "idle" | "processing" | "done" | "error"
+            "progress":  0.0,      # 0.0 – 1.0
+            "video_out": None,
+            "json_out":  None,
+            "error":     None,
+        }
 
     # ------------------------------------------------------------------ config
 
@@ -97,6 +105,29 @@ class AppState:
         with self._lock:
             self._video_playing = True
             self._video_loop = True
+
+    # ---------------------------------------------------------- batch preprocess
+
+    def set_preprocess_state(
+        self,
+        status: str,
+        progress: float = 0.0,
+        video_out: str | None = None,
+        json_out: str | None = None,
+        error: str | None = None,
+    ):
+        with self._lock:
+            self._preprocess = {
+                "status":    status,
+                "progress":  progress,
+                "video_out": video_out,
+                "json_out":  json_out,
+                "error":     error,
+            }
+
+    def get_preprocess_state(self) -> dict:
+        with self._lock:
+            return dict(self._preprocess)
 
 
 # ------------------------------------------------------------------ helpers
