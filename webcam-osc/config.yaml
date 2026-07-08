@@ -34,6 +34,8 @@ trackers:
     send_tips: false          # /hand/{i}/tip/{name}/x|y  (10 channels)
     send_fingers: true        # /hand/{i}/finger/{name}/curl|open|open/on  (15 channels)
     send_gestures: true       # /hand/{i}/gesture/{name}|/on  (10 channels)
+    thumb_curl_sensitivity: 1.5  # only affects closed end: above 0.5 curl reaches 1.0 sooner (1.0=no change, 2.0=reaches max at 75% closed)
+    send_absent_zeros: false  # false = only /hand/{i}/present=0 is sent when no hand detected; true = all channels zeroed
 
   face:
     enabled: false

@@ -73,6 +73,8 @@ class HandsTracker(BaseTracker):
         send_tips: bool = False,
         send_fingers: bool = True,
         send_gestures: bool = True,
+        thumb_curl_sensitivity: float = 1.5,
+        send_absent_zeros: bool = False,
     ):
         options = vision.HandLandmarkerOptions(
             base_options=mp_tasks.BaseOptions(
@@ -91,6 +93,8 @@ class HandsTracker(BaseTracker):
         self._send_tips      = send_tips
         self._send_fingers   = send_fingers
         self._send_gestures  = send_gestures
+        self._thumb_curl_sensitivity = thumb_curl_sensitivity
+        self._send_absent_zeros = send_absent_zeros
         self._t0 = time.perf_counter()
         self._last_ts: int = -1
 
@@ -131,6 +135,7 @@ class HandsTracker(BaseTracker):
         for hand_lms, side, i in detected:
             _DRAW.draw_landmarks(frame, hand_lms, _CONNECTIONS, _DRAW_LM, _DRAW_CN)
 
+            pairs.append((f"/webcam/hand/{i}/present", 1.0))
             pairs.append((f"/webcam/hand/{i}/side", side))
 
             # ── raw landmarks ────────────────────────────────────────────────
@@ -150,6 +155,13 @@ class HandsTracker(BaseTracker):
             # /open: 0=curled    1=extended  ← map to volume/brightness
             # /open/on: 1 when finger is up
             curls = {f: _finger_curl(hand_lms, f) for f in ("thumb", "index", "middle", "ring", "pinky")}
+            # Only stretch the upper (closed) half of the thumb curl range.
+            # Below 0.5 (open thumb) passes through unchanged — the open end stays correct.
+            # Above 0.5 the sensitivity multiplier pulls it toward 1.0 faster.
+            _tc = curls["thumb"]
+            if _tc > 0.5:
+                _tc = 0.5 + (_tc - 0.5) * self._thumb_curl_sensitivity
+            curls["thumb"] = float(max(0.0, min(1.0, _tc)))
             if self._send_fingers:
                 for fname, curl in curls.items():
                     open_val = 1.0 - curl
@@ -182,20 +194,25 @@ class HandsTracker(BaseTracker):
         # ── zero out slots for hands not detected this frame ──────────────────
         all_slots = set(range(self._max_num_hands))
         for i in all_slots - detected_slots:
-            pairs.append((f"/webcam/hand/{i}/side", 0.0))
-            if self._send_tips:
-                for name in ("thumb", "index", "middle", "ring", "pinky"):
-                    pairs.append((f"/webcam/hand/{i}/tip/{name}/x", 0.0))
-                    pairs.append((f"/webcam/hand/{i}/tip/{name}/y", 0.0))
-            if self._send_fingers:
-                for name in ("thumb", "index", "middle", "ring", "pinky"):
-                    pairs.append((f"/webcam/hand/{i}/finger/{name}/curl",    0.0))
-                    pairs.append((f"/webcam/hand/{i}/finger/{name}/open",    0.0))
-                    pairs.append((f"/webcam/hand/{i}/finger/{name}/open/on", 0.0))
-            if self._send_gestures:
-                for gname in ("fist", "open", "point", "peace", "pinch"):
-                    pairs.append((f"/webcam/hand/{i}/gesture/{gname}",    0.0))
-                    pairs.append((f"/webcam/hand/{i}/gesture/{gname}/on", 0.0))
+            # Always send present=0 so TouchDesigner can gate the synth.
+            # All other channels are only zeroed if send_absent_zeros is True
+            # (default False) to avoid spurious triggers when no hand is visible.
+            pairs.append((f"/webcam/hand/{i}/present", 0.0))
+            if self._send_absent_zeros:
+                pairs.append((f"/webcam/hand/{i}/side", 0.0))
+                if self._send_tips:
+                    for name in ("thumb", "index", "middle", "ring", "pinky"):
+                        pairs.append((f"/webcam/hand/{i}/tip/{name}/x", 0.0))
+                        pairs.append((f"/webcam/hand/{i}/tip/{name}/y", 0.0))
+                if self._send_fingers:
+                    for name in ("thumb", "index", "middle", "ring", "pinky"):
+                        pairs.append((f"/webcam/hand/{i}/finger/{name}/curl",    0.0))
+                        pairs.append((f"/webcam/hand/{i}/finger/{name}/open",    0.0))
+                        pairs.append((f"/webcam/hand/{i}/finger/{name}/open/on", 0.0))
+                if self._send_gestures:
+                    for gname in ("fist", "open", "point", "peace", "pinch"):
+                        pairs.append((f"/webcam/hand/{i}/gesture/{gname}",    0.0))
+                        pairs.append((f"/webcam/hand/{i}/gesture/{gname}/on", 0.0))
 
         return pairs
 

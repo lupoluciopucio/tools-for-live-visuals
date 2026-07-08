@@ -89,6 +89,8 @@ def build_trackers(cfg: dict) -> list[BaseTracker]:
             send_tips=h.get("send_tips", False),
             send_fingers=h.get("send_fingers", True),
             send_gestures=h.get("send_gestures", True),
+            thumb_curl_sensitivity=h.get("thumb_curl_sensitivity", 1.5),
+            send_absent_zeros=h.get("send_absent_zeros", False),
         ))
         print("  [+] HandsTracker")
 
@@ -132,11 +134,16 @@ def build_trackers(cfg: dict) -> list[BaseTracker]:
     return trackers
 
 
-def main():
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+def main(
+    force_no_preview: bool = False,
+    _app_state: "AppState | None" = None,
+    config_path: str | None = None,
+):
+    if config_path is None:
+        config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
     cfg = load_config(config_path)
 
-    app_state = AppState(cfg)
+    app_state = _app_state if _app_state is not None else AppState(cfg)
 
     # ── web UI ──────────────────────────────────────────────────────────────
     ui_port = cfg.get("ui", {}).get("port", 8080)
@@ -144,8 +151,9 @@ def main():
     lan_ip = get_lan_ip()
     print("webcam-osc starting")
     print(f"  Web UI  -> http://localhost:{ui_port}  (LAN: http://{lan_ip}:{ui_port})")
-    # Open browser automatically after server has had time to bind
-    threading.Timer(1.5, lambda: webbrowser.open(f"http://localhost:{ui_port}")).start()
+    # Open browser automatically (skip when launched via menubar – it handles this)
+    if _app_state is None:
+        threading.Timer(1.5, lambda: webbrowser.open(f"http://localhost:{ui_port}")).start()
 
     # ── initial build ────────────────────────────────────────────────────────
     working_cfg = app_state.get_config()
@@ -158,7 +166,7 @@ def main():
     ensure_models(working_cfg.get("trackers", {}))
     trackers = build_trackers(working_cfg)
 
-    show_preview = working_cfg.get("preview", {}).get("enabled", True)
+    show_preview = (not force_no_preview) and working_cfg.get("preview", {}).get("enabled", True)
     window_name  = working_cfg.get("preview", {}).get("window_name", "webcam-osc")
 
     cam_cfg = working_cfg["camera"]
@@ -187,6 +195,10 @@ def main():
             if app_state.shutdown_requested():
                 print("Shutdown requested from browser.")
                 break
+
+            if app_state.get_paused():
+                time.sleep(0.1)
+                continue
 
             # ── hot-swap on config change ────────────────────────────────────
             if app_state.consume_dirty():

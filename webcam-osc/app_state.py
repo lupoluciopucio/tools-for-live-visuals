@@ -14,6 +14,7 @@ class AppState:
         self._config: dict = copy.deepcopy(config)
         self._dirty = False
         self._shutdown = False
+        self._paused = False
         # Ring buffer of recent OSC messages: (seq, address, value_repr)
         self._osc_seq: int = 0
         self._osc_log: deque[tuple[int, str, str]] = deque(maxlen=200)
@@ -59,6 +60,14 @@ class AppState:
     def shutdown_requested(self) -> bool:
         with self._lock:
             return self._shutdown
+
+    def get_paused(self) -> bool:
+        with self._lock:
+            return self._paused
+
+    def set_paused(self, paused: bool):
+        with self._lock:
+            self._paused = paused
 
     # ---------------------------------------------------------------- osc log
 

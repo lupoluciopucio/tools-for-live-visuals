@@ -85,7 +85,8 @@
     backdrop-filter: blur(4px);
   }
   .video-overlay:hover { color: var(--text); border-color: var(--text); }
-  /* "float" button sits to the left of "hide" */
+  /* "float" button sits to the left of "hide", "pause" to the left of "float" */
+  #pause-toggle { right: 132px; }
   #pip-toggle  { right: 70px; }
   #video-toggle { right: 8px; }
   /* dim the main feed while PiP is active so it's clear where to look */
@@ -294,6 +295,7 @@
 <h1>webcam-osc</h1>
 <div class="video-wrap" id="video-wrap">
   <img id="video-feed" src="/video" alt="webcam feed">
+  <span class="video-overlay" id="pause-toggle">pause</span>
   <span class="video-overlay" id="pip-toggle">float</span>
   <span class="video-overlay" id="video-toggle">hide</span>
 </div>
@@ -439,6 +441,7 @@ const TRACKER_DEFS = [
       { key: "min_detection_confidence", label: "Detection confidence", type: "range", min: 0.1, max: 1.0, step: 0.05 },
       { key: "min_tracking_confidence",  label: "Tracking confidence",  type: "range", min: 0.1, max: 1.0, step: 0.05 },
       { key: "gesture_threshold", label: "Gesture threshold (/on)", type: "range", min: 0.1, max: 1.0, step: 0.05 },
+      { key: "thumb_curl_sensitivity", label: "Thumb curl sensitivity", type: "range", min: 0.5, max: 5.0, step: 0.1 },
       { key: "send_landmarks", label: "Send landmarks (63 floats)", type: "toggle" },
       { key: "send_tips",      label: "Send fingertip positions",  type: "toggle" },
       { key: "send_fingers",   label: "Send finger open/curl",     type: "toggle" },
@@ -963,6 +966,42 @@ document.getElementById('preprocess-btn').addEventListener('click', async () => 
   }
   _preprocessPollId = setInterval(_pollPreprocessStatus, 500);
 });
+
+// ─── pause / resume ───────────────────────────────────────────────────────
+let _appPaused = false;
+
+async function _syncPauseState(paused) {
+  _appPaused = paused;
+  const btn  = document.getElementById("pause-toggle");
+  const img  = document.getElementById("video-feed");
+  const wrap = document.getElementById("video-wrap");
+  if (_appPaused) {
+    btn.textContent = "run";
+    btn.style.color = "var(--on)";
+    btn.style.borderColor = "var(--on)";
+    img.src = "";
+    wrap.style.opacity = "0.4";
+  } else {
+    btn.textContent = "pause";
+    btn.style.color = "";
+    btn.style.borderColor = "";
+    img.src = "/video";
+    wrap.style.opacity = "";
+  }
+}
+
+document.getElementById("pause-toggle").addEventListener("click", async () => {
+  const next = !_appPaused;
+  await fetch("/api/pause", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paused: next }),
+  });
+  _syncPauseState(next);
+});
+
+// Sync pause state on page load
+fetch("/api/pause").then(r => r.json()).then(s => _syncPauseState(s.paused)).catch(() => {});
 
 // ─── video toggle ─────────────────────────────────────────────────────────
 let _feedVisible = true;

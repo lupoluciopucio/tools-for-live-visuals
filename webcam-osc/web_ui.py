@@ -87,6 +87,17 @@ async def shutdown():
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/pause")
+async def get_pause():
+    return JSONResponse({"paused": state.get_paused()})
+
+
+@app.post("/api/pause")
+async def set_pause(body: dict):
+    state.set_paused(bool(body.get("paused", False)))
+    return JSONResponse({"paused": state.get_paused()})
+
+
 @app.post("/api/video/upload")
 async def upload_video(file: UploadFile = File(...)):
     """Save an uploaded video file and switch the source to it."""
@@ -185,6 +196,9 @@ async def video_feed():
     """MJPEG stream of the annotated webcam feed."""
     async def generate():
         while True:
+            if state.get_paused():
+                await asyncio.sleep(0.5)
+                continue
             frame = state.get_frame()
             if frame is not None:
                 yield (

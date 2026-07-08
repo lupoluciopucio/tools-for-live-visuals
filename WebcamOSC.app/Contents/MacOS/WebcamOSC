@@ -1,0 +1,10 @@
+#!/bin/bash
+# WebcamOSC launcher – runs without a visible terminal window
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/webcam-osc"
+PYTHON="$APP_DIR/.venv/bin/python"
+LOG="$HOME/Library/Logs/WebcamOSC.log"
+
+cd "$APP_DIR"
+exec "$PYTHON" menubar.py >> "$LOG" 2>&1
